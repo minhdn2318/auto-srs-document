@@ -8,8 +8,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
-from crewai import Agent, Task, Crew, Process
-from langchain_groq import ChatGroq
+# Thay đổi lớn nhất: Dùng LLM từ lõi của CrewAI
+from crewai import Agent, Task, Crew, Process, LLM
 
 # ===== 1. QUẢN LÝ TRẠNG THÁI =====
 if 'srs_content' not in st.session_state: st.session_state.srs_content = None
@@ -23,7 +23,7 @@ GROQ_MODELS = [
     "openai/gpt-oss-20b"
 ]
 
-# ===== 2. ĐỊNH DẠNG DOCX (Giữ nguyên) =====
+# ===== 2. ĐỊNH DẠNG DOCX =====
 def set_ieee_format(doc, m_left, m_right, m_top, m_bottom):
     section = doc.sections[0]
     section.left_margin = Cm(m_left); section.right_margin = Cm(m_right)
@@ -54,7 +54,9 @@ st.title("🤖 Multi-Model SRS Architect (Groq Powered)")
 
 with st.sidebar:
     st.header("⚙️ Cấu hình Hệ thống")
-    st.session_state.api_key = st.text_input("Groq API Key", type="password")
+    # Đọc key từ secrets (nếu có cấu hình trên Streamlit Cloud), nếu không thì để trống cho người dùng nhập
+    default_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else ""
+    st.session_state.api_key = st.text_input("Groq API Key", value=default_key, type="password")
     
     st.divider()
     st.subheader("📏 Page Setup (cm)")
@@ -76,7 +78,6 @@ with st.expander("Tùy chỉnh vai trò và Model cho từng Agent", expanded=Tr
     
     with c1:
         st.markdown("### ✍️ Người viết (Writer)")
-        # Mặc định chọn model nhỏ/nhanh (index 1: llama-3.1-8b-instant)
         model_1 = st.selectbox("🧠 Não của Writer", GROQ_MODELS, index=1)
         role_1 = st.text_input("Role 1", "Senior Solution Architect")
         goal_1 = st.text_area("Goal 1", "Lập bản nháp SRS chuẩn IEEE 830 với đầy đủ 5 chương cốt lõi dựa trên ý tưởng.", height=100)
@@ -84,7 +85,6 @@ with st.expander("Tùy chỉnh vai trò và Model cho từng Agent", expanded=Tr
     
     with c2:
         st.markdown("### 🕵️ Người phản biện (Reviewer)")
-        # Mặc định chọn model siêu to (index 2: openai/gpt-oss-120b)
         model_2 = st.selectbox("🧠 Não của Reviewer", GROQ_MODELS, index=2)
         role_2 = st.text_input("Role 2", "Cybersecurity & QA Lead")
         goal_2 = st.text_area("Goal 2", "Phản biện gắt gao bản nháp SRS về tính bảo mật, khả năng mở rộng và các luồng lỗi.", height=100)
@@ -92,7 +92,6 @@ with st.expander("Tùy chỉnh vai trò và Model cho từng Agent", expanded=Tr
     
     with c3:
         st.markdown("### 👨‍⚖️ Người chốt duyệt (Approver)")
-        # Mặc định chọn model cân bằng (index 0: llama-3.3-70b-versatile)
         model_3 = st.selectbox("🧠 Não của Approver", GROQ_MODELS, index=0)
         role_3 = st.text_input("Role 3", "Product Master")
         goal_3 = st.text_area("Goal 3", "Tổng hợp bản nháp và các phản biện để xuất ra bản SRS hoàn chỉnh, chi tiết và chuyên nghiệp nhất.", height=100)
@@ -106,15 +105,16 @@ if st.button("📝 Bắt đầu Khởi tạo SRS", type="primary"):
     if not st.session_state.api_key or not user_idea: 
         st.error("Bác quên nhập API Key hoặc Ý tưởng rồi kìa!"); st.stop()
     
+    # Bơm key vào hệ thống cho CrewAI tự nhận
     os.environ["GROQ_API_KEY"] = st.session_state.api_key
 
     with st.status("🚀 Đội ngũ đang họp... (Xem log chi tiết ở Terminal)", expanded=True) as status:
         st.write("Đang cấp phát 'Bộ não' (LLM) riêng biệt cho từng Agent...")
         
-        # Khởi tạo 3 bộ LLM khác nhau dựa trên UI
-        llm_writer = ChatGroq(model_name=model_1, temperature=0.3)
-        llm_reviewer = ChatGroq(model_name=model_2, temperature=0.1) # Nhiệt độ thấp để soi lỗi chuẩn xác
-        llm_approver = ChatGroq(model_name=model_3, temperature=0.2)
+        # Khởi tạo 3 bộ LLM chuẩn Native của CrewAI (Đã fix lỗi LiteLLM)
+        llm_writer = LLM(model=f"groq/{model_1}", temperature=0.3)
+        llm_reviewer = LLM(model=f"groq/{model_2}", temperature=0.1) 
+        llm_approver = LLM(model=f"groq/{model_3}", temperature=0.2)
 
         st.write("Đang thức tỉnh Agents...")
         agent_writer = Agent(role=role_1, goal=goal_1, backstory=backstory_1, llm=llm_writer, verbose=True)
@@ -146,10 +146,14 @@ if st.button("📝 Bắt đầu Khởi tạo SRS", type="primary"):
         )
 
         st.write(f"🔥 Bắt đầu suy luận luân phiên ({model_1} -> {model_2} -> {model_3})...")
-        result = srs_crew.kickoff()
-        
-        st.session_state.srs_content = str(result)
-        status.update(label="✅ Quá trình suy luận Multi-Model đã hoàn tất!", state="complete")
+        try:
+            result = srs_crew.kickoff()
+            st.session_state.srs_content = str(result)
+            status.update(label="✅ Quá trình suy luận Multi-Model đã hoàn tất!", state="complete")
+        except Exception as e:
+            st.error(f"Lỗi hệ thống: {str(e)}")
+            status.update(label="❌ Có lỗi xảy ra!", state="error")
+            st.stop()
 
 # ===== 5. XUẤT FILE DOCX =====
 if st.session_state.srs_content:
