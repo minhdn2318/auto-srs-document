@@ -8,39 +8,44 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
-# Thay đổi lớn nhất: Dùng LLM từ lõi của CrewAI
 from crewai import Agent, Task, Crew, Process, LLM
 
-# ===== 1. QUẢN LÝ TRẠNG THÁI =====
-if 'srs_content' not in st.session_state: st.session_state.srs_content = None
+# ===== 1. QUẢN LÝ TRẠNG THÁI TỪNG CHƯƠNG =====
+if 'srs_chapters' not in st.session_state: st.session_state.srs_chapters = {}
+if 'test_cases' not in st.session_state: st.session_state.test_cases = ""
 if 'api_key' not in st.session_state: st.session_state.api_key = ""
 
-# Danh sách Model Text của Groq (Lọc bỏ Whisper)
-GROQ_MODELS = [
-    "llama-3.3-70b-versatile", 
-    "llama-3.1-8b-instant", 
-    "openai/gpt-oss-120b", 
-    "openai/gpt-oss-20b"
+GROQ_MODELS = ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+
+# ĐỊNH NGHĨA CÁC CHƯƠNG BẮT BUỘC (CHIA ĐỂ TRỊ)
+CHAPTERS_PLAN = [
+    {
+        "id": "CH1",
+        "title": "CHƯƠNG 1: TỔNG QUAN & PHÂN QUYỀN",
+        "desc": "Viết Tổng quan dự án, Mục tiêu, Phạm vi. Xác định rõ các Tác nhân (Actors) và Quyền hạn tương ứng."
+    },
+    {
+        "id": "CH2",
+        "title": "CHƯƠNG 2: ĐẶC TẢ USE CASE (CHỨC NĂNG CỐT LÕI)",
+        "desc": "Mổ xẻ 3-5 chức năng xương sống nhất. BẮT BUỘC format: Tên UC, Tiền điều kiện, Luồng chính (từng bước), Luồng ngoại lệ, Hậu điều kiện, Business Rules."
+    },
+    {
+        "id": "CH3",
+        "title": "CHƯƠNG 3: YÊU CẦU DỮ LIỆU & PHI CHỨC NĂNG",
+        "desc": "Xác định các Thực thể dữ liệu chính. Yêu cầu Hiệu năng, Bảo mật, Mở rộng."
+    }
 ]
 
-# ===== 2. ĐỊNH DẠNG DOCX =====
+# ===== 2. HÀM HỖ TRỢ DOCX =====
 def set_ieee_format(doc, m_left, m_right, m_top, m_bottom):
     section = doc.sections[0]
     section.left_margin = Cm(m_left); section.right_margin = Cm(m_right)
     section.top_margin = Cm(m_top); section.bottom_margin = Cm(m_bottom)
-    section.different_first_page_header_footer = True
-    
-def add_page_number(paragraph):
-    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    run = paragraph.add_run()
-    fldChar = OxmlElement('w:fldChar'); fldChar.set(qn('w:fldCharType'), 'begin'); run._r.append(fldChar)
-    instr = OxmlElement('w:instrText'); instr.text = "PAGE"; run._r.append(instr)
-    fldChar2 = OxmlElement('w:fldChar'); fldChar2.set(qn('w:fldCharType'), 'end'); run._r.append(fldChar2)
 
 def add_toc(doc):
     doc.add_page_break()
-    p = doc.add_paragraph("MỤC LỤC", style='Heading 1'); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    paragraph = doc.add_paragraph(); run = paragraph.add_run()
+    p = doc.add_paragraph("MỤC LỤC TÀI LIỆU", style='Heading 1'); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = doc.add_paragraph().add_run()
     fldChar = OxmlElement('w:fldChar'); fldChar.set(qn('w:fldCharType'), 'begin'); run._r.append(fldChar)
     instrText = OxmlElement('w:instrText'); instrText.set(qn('xml:space'), 'preserve'); instrText.text = 'TOC \\o "1-3" \\h \\z \\u'
     run._r.append(instrText)
@@ -48,142 +53,158 @@ def add_toc(doc):
     fldChar3 = OxmlElement('w:fldChar'); fldChar3.set(qn('w:fldCharType'), 'end'); run._r.append(fldChar3)
     doc.add_page_break()
 
-# ===== 3. GIAO DIỆN STREAMLIT =====
-st.set_page_config(page_title="Master SRS CrewAI", layout="wide")
-st.title("🤖 Multi-Model SRS Architect (Groq Powered)")
+# ===== 3. GIAO DIỆN CHÍNH =====
+st.set_page_config(page_title="Deep Expert SRS", layout="wide")
+st.title("🧠 Deep Expert: Lập trình viên tài liệu (Chapter-by-Chapter)")
 
 with st.sidebar:
-    st.header("⚙️ Cấu hình Hệ thống")
-    # Đọc key từ secrets (nếu có cấu hình trên Streamlit Cloud), nếu không thì để trống cho người dùng nhập
-    default_key = st.secrets.get("GROQ_API_KEY", "") if hasattr(st, "secrets") else ""
-    st.session_state.api_key = st.text_input("Groq API Key", value=default_key, type="password")
+    st.header("🔑 Cấu hình Hệ thống")
+    st.session_state.api_key = st.text_input("Groq API Key", value=st.secrets.get("GROQ_API_KEY", ""), type="password")
     
     st.divider()
-    st.subheader("📏 Page Setup (cm)")
-    c_m1, c_m2 = st.columns(2)
-    with c_m1:
-        m_left = st.number_input("Trái", value=3.0)
-        m_top = st.number_input("Trên", value=2.0)
-    with c_m2:
-        m_right = st.number_input("Phải", value=2.0)
-        m_bottom = st.number_input("Dưới", value=2.0)
-    
-    line_sp = st.number_input("Giãn dòng", value=1.15)
-    font_sz = st.number_input("Cỡ chữ", value=12)
+    st.subheader("⚙️ Cấu hình Model")
+    m1 = st.selectbox("BA Model (Writer)", GROQ_MODELS, index=0)
+    m2 = st.selectbox("QA Model (Critic)", GROQ_MODELS, index=2)
+    m3 = st.selectbox("TPM Model (Approver)", GROQ_MODELS, index=0)
 
-# --- GIAO DIỆN PHÂN VAI & CHỌN MODEL ---
-st.subheader("👥 Cấu hình Đội ngũ AI & Bộ não")
-with st.expander("Tùy chỉnh vai trò và Model cho từng Agent", expanded=True):
-    c1, c2, c3 = st.columns(3)
-    
-    with c1:
-        st.markdown("### ✍️ Người viết (Writer)")
-        model_1 = st.selectbox("🧠 Não của Writer", GROQ_MODELS, index=1)
-        role_1 = st.text_input("Role 1", "Senior Solution Architect")
-        goal_1 = st.text_area("Goal 1", "Lập bản nháp SRS chuẩn IEEE 830 với đầy đủ 5 chương cốt lõi dựa trên ý tưởng.", height=100)
-        backstory_1 = st.text_area("Backstory 1", "Bạn có 30 năm kinh nghiệm phân tích hệ thống, viết rất nhanh và chuẩn format.", height=80)
-    
-    with c2:
-        st.markdown("### 🕵️ Người phản biện (Reviewer)")
-        model_2 = st.selectbox("🧠 Não của Reviewer", GROQ_MODELS, index=2)
-        role_2 = st.text_input("Role 2", "Cybersecurity & QA Lead")
-        goal_2 = st.text_area("Goal 2", "Phản biện gắt gao bản nháp SRS về tính bảo mật, khả năng mở rộng và các luồng lỗi.", height=100)
-        backstory_2 = st.text_area("Backstory 2", "Bạn là chuyên gia tìm lỗ hổng logic. Không bao giờ hài lòng với bản nháp đầu tiên.", height=80)
-    
-    with c3:
-        st.markdown("### 👨‍⚖️ Người chốt duyệt (Approver)")
-        model_3 = st.selectbox("🧠 Não của Approver", GROQ_MODELS, index=0)
-        role_3 = st.text_input("Role 3", "Product Master")
-        goal_3 = st.text_area("Goal 3", "Tổng hợp bản nháp và các phản biện để xuất ra bản SRS hoàn chỉnh, chi tiết và chuyên nghiệp nhất.", height=100)
-        backstory_3 = st.text_area("Backstory 3", "Bạn là Giám đốc Sản phẩm. Đảm bảo tài liệu sẵn sàng giao cho team Dev mà không bị hoa mỹ markdown.", height=80)
+user_idea = st.text_area("🚀 Ý tưởng nghiệp vụ (Chi tiết):", height=120)
 
-st.divider()
-user_idea = st.text_area("🚀 Ý tưởng phần mềm / Yêu cầu nghiệp vụ:", height=100)
+col1, col2 = st.columns(2)
 
-# ===== 4. FLOW GEN SRS VỚI MULTI-MODEL =====
-if st.button("📝 Bắt đầu Khởi tạo SRS", type="primary"):
+# ===== 4. VÒNG LẶP GEN SRS (TỪNG CHƯƠNG) =====
+if col1.button("🔥 BẮT ĐẦU PHÂN TÍCH TỪNG CHƯƠNG", type="primary"):
     if not st.session_state.api_key or not user_idea: 
-        st.error("Bác quên nhập API Key hoặc Ý tưởng rồi kìa!"); st.stop()
+        st.error("Thiếu thông tin API Key hoặc Yêu cầu!"); st.stop()
     
-    # Bơm key vào hệ thống cho CrewAI tự nhận
     os.environ["GROQ_API_KEY"] = st.session_state.api_key
+    st.session_state.srs_chapters = {} # Reset
+    st.session_state.test_cases = ""
 
-    with st.status("🚀 Đội ngũ đang họp... (Xem log chi tiết ở Terminal)", expanded=True) as status:
-        st.write("Đang cấp phát 'Bộ não' (LLM) riêng biệt cho từng Agent...")
+    # Khởi tạo Não
+    ba_llm = LLM(model=f"groq/{m1}", temperature=0.3)
+    qa_llm = LLM(model=f"groq/{m2}", temperature=0.1)
+    tpm_llm = LLM(model=f"groq/{m3}", temperature=0.1)
+
+    ba_agent = Agent(role="Lead BA", goal="Viết bản nháp siêu chi tiết cho TỪNG CHƯƠNG được giao.", backstory="Bạn là BA 15 năm kinh nghiệm.", llm=ba_llm)
+    qa_agent = Agent(role="Principal QA", goal="Phản biện gắt gao bản nháp của BA, tìm ra lỗ hổng logic, case ngoại lệ.", backstory="Bạn là nỗi ám ảnh của BA, chuyên bắt lỗi.", llm=qa_llm)
+    tpm_agent = Agent(role="Tech Product Manager", goal="Tổng hợp nháp của BA và phản biện của QA thành bản chốt cuối cùng.", backstory="Bạn là người chốt hạ tài liệu, chuyên nghiệp, xúc tích.", llm=tpm_llm)
+
+    context_memory = "" # Biến lưu trữ các chương trước để làm ngữ cảnh
+
+    for chap in CHAPTERS_PLAN:
+        with st.container():
+            st.markdown(f"### ⚙️ Đang xử lý: {chap['title']}")
+            
+            # Cấu hình Task cho từng chương
+            t_draft = Task(
+                description=f"Ý tưởng gốc: {user_idea}\n\nCác chương đã chốt trước đó (Ngữ cảnh): {context_memory}\n\nNHIỆM VỤ: Hãy viết bản nháp cho: {chap['title']}. Nội dung yêu cầu: {chap['desc']}",
+                expected_output="Bản nháp sâu sắc, chi tiết.",
+                agent=ba_agent
+            )
+            t_review = Task(
+                description=f"Hãy đọc bản nháp của BA vừa tạo cho {chap['title']}. Chỉ trích và vạch ra các thiếu sót (Edge cases, validation, logic lỗi).",
+                expected_output="Danh sách các điểm cần sửa/bổ sung.",
+                agent=qa_agent
+            )
+            t_final = Task(
+                description=f"Dựa vào bản nháp và phản biện, hãy viết lại {chap['title']} hoàn chỉnh nhất. Xóa bỏ các râu ria, chỉ giữ lại nội dung tài liệu chuẩn.",
+                expected_output="Bản chốt của chương.",
+                agent=tpm_agent
+            )
+
+            crew = Crew(agents=[ba_agent, qa_agent, tpm_agent], tasks=[t_draft, t_review, t_final], process=Process.sequential)
+            
+            with st.spinner(f"Agents đang tranh luận về {chap['title']}..."):
+                crew.kickoff()
+                
+                # Lấy dữ liệu thô (raw output) từ từng Task để làm Log
+                draft_log = getattr(t_draft.output, 'raw', str(t_draft.output))
+                review_log = getattr(t_review.output, 'raw', str(t_review.output))
+                final_text = getattr(t_final.output, 'raw', str(t_final.output))
+
+                # Ghi nhận vào state và context
+                st.session_state.srs_chapters[chap['id']] = f"{chap['title']}\n{final_text}"
+                context_memory += f"\n\n--- TÓM TẮT {chap['title']} ---\n{final_text[:500]}..." # Dùng 500 ký tự đầu làm ngữ cảnh để tránh lố token
+
+            # Hiển thị UI Log minh bạch cho người dùng xem
+            with st.expander(f"👁️ Xem Log Tranh luận: {chap['title']}", expanded=False):
+                st.markdown("#### 🧑‍💻 Bản nháp của Lead BA")
+                st.info(draft_log)
+                st.markdown("#### 🕵️ Lời phản biện của Principal QA")
+                st.warning(review_log)
+                st.markdown("#### 👨‍⚖️ Bản chốt của TPM")
+                st.success(final_text)
+
+    st.success("🎉 Đã hoàn thành toàn bộ SRS!")
+
+# ===== 5. MODULE TEST CASE ĐỘC LẬP =====
+if st.session_state.srs_chapters:
+    if col2.button("🧪 TẠO TEST CASE TỪ SRS NÀY"):
+        os.environ["GROQ_API_KEY"] = st.session_state.api_key
+        qa_llm = LLM(model=f"groq/{m2}", temperature=0.2)
         
-        # Khởi tạo 3 bộ LLM chuẩn Native của CrewAI (Đã fix lỗi LiteLLM)
-        llm_writer = LLM(model=f"groq/{model_1}", temperature=0.3)
-        llm_reviewer = LLM(model=f"groq/{model_2}", temperature=0.1) 
-        llm_approver = LLM(model=f"groq/{model_3}", temperature=0.2)
-
-        st.write("Đang thức tỉnh Agents...")
-        agent_writer = Agent(role=role_1, goal=goal_1, backstory=backstory_1, llm=llm_writer, verbose=True)
-        agent_reviewer = Agent(role=role_2, goal=goal_2, backstory=backstory_2, llm=llm_reviewer, verbose=True)
-        agent_approver = Agent(role=role_3, goal=goal_3, backstory=backstory_3, llm=llm_approver, verbose=True)
-
-        st.write("Đang giao Task...")
-        task_draft = Task(
-            description=f"Viết bản nháp SRS cho ý tưởng sau: {user_idea}",
-            expected_output="Bản nháp SRS chuẩn IEEE 830 đầy đủ các phần.",
-            agent=agent_writer
+        test_agent = Agent(
+            role="Senior Automation QA", 
+            goal="Dựa trên tài liệu SRS đã chốt, thiết kế bộ Test Suite chi tiết đến từng bước click chuột.", 
+            backstory="Bạn là trùm test hệ thống, tư duy logic tuyệt đỉnh.", 
+            llm=qa_llm
         )
-        task_review = Task(
-            description="Đọc bản nháp SRS vừa tạo. Chỉ ra các thiếu sót về logic, bảo mật. Đưa ra đề xuất sửa chữa cụ thể.",
-            expected_output="Danh sách các điểm hổng logic cần sửa chữa.",
-            agent=agent_reviewer
+        
+        full_srs_text = "\n".join(st.session_state.srs_chapters.values())
+        
+        test_task = Task(
+            description=f"Đọc kỹ bản SRS sau:\n{full_srs_text}\n\nHãy tạo Test Case cho các Use Case trong CHƯƠNG 2. Trình bày theo dạng: Mã TC, Tên, Các bước (Steps), Input Data, Kết quả mong đợi (Expected). Bắt buộc phải có cả Positive và Negative case.",
+            expected_output="Danh sách Test Case chuyên nghiệp.",
+            agent=test_agent
         )
-        task_finalize = Task(
-            description="Dùng bản nháp ban đầu và nhận xét của Reviewer để viết lại bản SRS cuối cùng. Trình bày chuẩn format văn bản hành chính, KHÔNG dùng Markdown (** hay #).",
-            expected_output="Bản tài liệu SRS hoàn chỉnh cuối cùng.",
-            agent=agent_approver
-        )
+        
+        with st.status("🔬 QA đang nhâm nhi cafe và thiết kế Test Case...", expanded=True):
+            test_crew = Crew(agents=[test_agent], tasks=[test_task])
+            result = test_crew.kickoff()
+            st.session_state.test_cases = getattr(result, 'raw', str(result))
+            st.success("Đã sinh Test Case xong!")
 
-        srs_crew = Crew(
-            agents=[agent_writer, agent_reviewer, agent_approver],
-            tasks=[task_draft, task_review, task_finalize],
-            process=Process.sequential,
-            verbose=True
-        )
-
-        st.write(f"🔥 Bắt đầu suy luận luân phiên ({model_1} -> {model_2} -> {model_3})...")
-        try:
-            result = srs_crew.kickoff()
-            st.session_state.srs_content = str(result)
-            status.update(label="✅ Quá trình suy luận Multi-Model đã hoàn tất!", state="complete")
-        except Exception as e:
-            st.error(f"Lỗi hệ thống: {str(e)}")
-            status.update(label="❌ Có lỗi xảy ra!", state="error")
-            st.stop()
-
-# ===== 5. XUẤT FILE DOCX =====
-if st.session_state.srs_content:
+# ===== 6. HIỂN THỊ TỔNG HỢP & XUẤT FILE =====
+if st.session_state.srs_chapters:
     st.divider()
-    st.subheader("📄 Kết quả SRS")
-    st.text_area("Bản thảo SRS Cuối cùng (Plain Text Preview)", st.session_state.srs_content, height=400)
+    tab_srs, tab_tc = st.tabs(["📄 TOÀN BỘ TÀI LIỆU SRS", "🧪 BỘ TEST CASE"])
     
-    def create_srs_docx():
+    full_doc = "\n\n".join(st.session_state.srs_chapters.values())
+    
+    with tab_srs:
+        st.text_area("SRS Master Document", full_doc, height=500)
+    
+    with tab_tc:
+        if st.session_state.test_cases:
+            st.text_area("Test Suite", st.session_state.test_cases, height=500)
+        else:
+            st.info("Hãy bấm nút 'Tạo Test Case' ở trên để sinh kịch bản kiểm thử.")
+
+    def create_export_docx():
         doc = Document()
-        set_ieee_format(doc, m_left, m_right, m_top, m_bottom)
+        set_ieee_format(doc, 3.0, 2.0, 2.0, 2.0)
+        
         p = doc.add_paragraph(); p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        r = p.add_run(f"\n\n\nSOFTWARE REQUIREMENTS SPECIFICATION\n(IEEE 830 Standard)\n\nProject: {user_idea[:50].upper()}...")
-        r.bold = True; r.font.size = Pt(20); r.font.name = "Times New Roman"
+        run = p.add_run(f"\n\n\nENTERPRISE SRS & TEST PLAN\n\n")
+        run.bold = True; run.font.size = Pt(20)
         add_toc(doc)
         
-        for line in st.session_state.srs_content.split('\n'):
-            if line.strip():
-                if re.match(r'^\d+\.', line) or re.match(r'^\d+\.\d+', line):
-                    level = line.count('.') if line.count('.') <= 3 else 3
-                    h = doc.add_heading(line, level=level)
-                    for run in h.runs: 
-                        run.font.name = "Times New Roman"; run.font.color.rgb = RGBColor(0,0,0)
-                else:
-                    p = doc.add_paragraph(line); p.paragraph_format.line_spacing = line_sp
-                    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-                    run = p.runs[0] if p.runs else p.add_run(line)
-                    run.font.name = "Times New Roman"; run.font.size = Pt(font_sz)
+        # Combine SRS and TC
+        final_text = full_doc
+        if st.session_state.test_cases:
+            final_text += "\n\nCHƯƠNG 4: TEST SUITE (KỊCH BẢN KIỂM THỬ)\n" + st.session_state.test_cases
 
-        add_page_number(doc.sections[0].footer.paragraphs[0])
+        for line in final_text.split('\n'):
+            line = line.strip()
+            if not line: continue
+            if re.match(r'^CHƯƠNG \d+', line):
+                h = doc.add_heading(line, level=1)
+                for r in h.runs: r.font.color.rgb = RGBColor(0,0,0)
+            else:
+                p = doc.add_paragraph(line)
+                if p.runs: p.runs[0].font.name = "Times New Roman"
+        
         buf = io.BytesIO(); doc.save(buf); buf.seek(0)
         return buf
 
-    st.download_button("📥 Tải File Word (Chuẩn IEEE 830)", create_srs_docx(), "SRS_MultiModel_Master.docx", type="primary")
+    st.download_button("📥 TẢI XUỐNG FILE WORD TỔNG HỢP", create_export_docx(), "Enterprise_Project_Plan.docx", type="primary", use_container_width=True)
