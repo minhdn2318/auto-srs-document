@@ -86,7 +86,7 @@ if st.button("🔥 BƯỚC 1: TỰ ĐỘNG PHÂN TÍCH, MỞ RỘNG & TẠO SRS"
         crew_ch1 = Crew(agents=[agent_ba, agent_tpm], tasks=[t_ch1_draft, t_ch1_final], verbose=False)
         full_document += "CHƯƠNG 1: TỔNG QUAN DỰ ÁN\n" + getattr(crew_ch1.kickoff(), 'raw', "") + "\n\n"
 
-        # --- BƯỚC 2: BRAINSTORM & MỞ RỘNG USE CASE (BẢN FIX LỖI PARSE) ---
+        # --- BƯỚC 2: BRAINSTORM & MỞ RỘNG USE CASE ---
         time.sleep(2)
         st.write("💡 AI Strategist đang mở rộng ý tưởng và vạch ra toàn bộ Use Case...")
         t_expand_uc = Task(
@@ -96,80 +96,77 @@ if st.button("🔥 BƯỚC 1: TỰ ĐỘNG PHÂN TÍCH, MỞ RỘNG & TẠO SRS"
             ⚠️ LỆNH BẮT BUỘC ⚠️: 
             Mỗi Use Case bạn nghĩ ra PHẢI nằm trên 1 dòng riêng biệt và BẮT BUỘC bắt đầu bằng tiền tố "[UC]: ".
             Ví dụ:
-            Phân hệ Khách hàng:
             [UC]: Đăng nhập hệ thống qua Gmail
-            [UC]: Quét mã QR truy cập bia mộ
-            
-            Tuyệt đối không được quên tiền tố [UC]: trước mỗi chức năng.""",
+            [UC]: Quét mã QR truy cập bia mộ""",
             expected_output="Danh sách Use Case có tiền tố [UC]:", 
             agent=agent_strategist
         )
         crew_expand = Crew(agents=[agent_strategist], tasks=[t_expand_uc], verbose=False)
         
-        # Bắt lỗi an toàn khi lấy dữ liệu từ CrewAI
         try:
             res_expand = crew_expand.kickoff()
             uc_raw_list = getattr(res_expand, 'raw', str(res_expand))
         except Exception as e:
-            uc_raw_list = str(e)
-            st.warning("Có chút lỗi khi nhận dữ liệu từ AI, hệ thống đang tự động khôi phục...")
+            uc_raw_list = ""
+            st.warning("Có chút lỗi khi nhận dữ liệu từ AI Strategist...")
         
         # Parse danh sách chuẩn xác 100% dựa vào Key "[UC]:"
         all_use_cases = []
         for line in uc_raw_list.split('\n'):
             if '[UC]:' in line:
-                # Cắt lấy phần tên đằng sau chữ [UC]: và dọn dẹp ký tự thừa
                 uc_name = line.split('[UC]:')[-1].replace('**', '').replace('*', '').strip()
                 if len(uc_name) > 3:
                     all_use_cases.append(uc_name)
         
-        # Fallback (Phương án dự phòng): Nếu AI cãi lệnh không sinh chữ [UC]:
-        if not all_use_cases:
-            import re
-            # Vét tất cả các dòng có đánh số (1., 2.) hoặc gạch đầu dòng (-, *)
-            all_use_cases = [re.sub(r'^[\d\.\-\*\s]+', '', line).strip() for line in uc_raw_list.split('\n') if re.match(r'^[\s]*[\-\*\d]', line) and len(line) > 5]
-            
-        # Fallback cuối cùng nếu có lỗi mạng API (chống crash app)
         if not all_use_cases: 
-            all_use_cases = ["Quản lý hồ sơ người đã khuất", "Tương tác dâng hương ảo", "Thanh toán gói cước 6 tháng/1 năm", "Tích hợp và đăng nhập Gmail"]
+            all_use_cases = ["Quản lý hồ sơ người đã khuất", "Tương tác dâng hương ảo", "Thanh toán gói cước", "Đăng nhập Gmail"]
         
-        # Lọc ra 8 Use Case quan trọng nhất để chạy chi tiết (Tránh Rate Limit)
-        use_cases_to_run = all_use_cases[:8] if len(all_use_cases) > 8 else all_use_cases
+        # LẤY TOÀN BỘ USE CASE (Không giới hạn nữa)
+        use_cases_to_run = all_use_cases 
         
-        st.success(f"🧠 Strategist đã nghĩ ra {len(all_use_cases)} Use Case! Đang tiến hành phân tích sâu {len(use_cases_to_run)} Use Case cốt lõi nhất:")
+        st.success(f"🧠 Strategist đã nghĩ ra {len(use_cases_to_run)} Use Case! Đang tiến hành phân tích sâu TOÀN BỘ:")
         for uc in use_cases_to_run: 
             st.markdown(f"- {uc}")
         
         full_document += "CHƯƠNG 2: ĐẶC TẢ USE CASE CHI TIẾT\n"
 
-        # --- BƯỚC 3: VÒNG LẶP KẺ BẢNG TỪNG USE CASE ---
+        # --- BƯỚC 3: VÒNG LẶP KẺ BẢNG TỪNG USE CASE (CÓ CƠ CHẾ CHỐNG RATE LIMIT) ---
+        st.write("⚙️ Bắt đầu vòng lặp kẻ bảng cho TỪNG Use Case...")
         for idx, uc_name in enumerate(use_cases_to_run):
-            st.write(f"🔄 Đang mổ xẻ UC {idx+1}/{len(use_cases_to_run)}: **{uc_name}**")
+            st.write(f"🔄 Đang mổ xẻ và kẻ bảng UC {idx+1}/{len(use_cases_to_run)}: **{uc_name}**")
+            
             t_uc_draft = Task(description=f"Đặc tả UC: '{uc_name}'.\n\n{UC_TABLE_TEMPLATE}", expected_output="Bảng nháp UC", agent=agent_ba)
-            t_uc_critic = Task(description=f"Soi bảng nháp UC '{uc_name}'. Tìm lỗ hổng: API sập? Spam click? Data rỗng?", expected_output="Lỗi UC", agent=agent_qa)
-            t_uc_final = Task(description=f"Cập nhật lỗi vào bảng đặc tả UC '{uc_name}'. BẮT BUỘC GIỮ NGUYÊN FORMAT BẢNG MARKDOWN.", expected_output="Bảng chốt UC", agent=agent_tpm)
+            t_uc_critic = Task(description=f"Soi bảng nháp UC '{uc_name}'. Tìm ra lỗ hổng: API sập? Spam click?", expected_output="Lỗi UC", agent=agent_qa)
+            t_uc_final = Task(description=f"Cập nhật các lỗi vào bảng đặc tả UC '{uc_name}'. BẮT BUỘC GIỮ NGUYÊN FORMAT BẢNG MARKDOWN.", expected_output="Bảng chốt UC", agent=agent_tpm)
             
             crew_uc = Crew(agents=[agent_ba, agent_qa, agent_tpm], tasks=[t_uc_draft, t_uc_critic, t_uc_final], verbose=False)
-            try:
-                time.sleep(3)
-                uc_result = getattr(crew_uc.kickoff(), 'raw', "")
-            except Exception:
-                st.warning("⏳ Rate Limit! Tạm nghỉ 12s...")
-                time.sleep(12)
-                uc_result = getattr(crew_uc.kickoff(), 'raw', "")
+            
+            # CƠ CHẾ RETRY THÔNG MINH (Exponential Backoff)
+            max_retries = 3
+            wait_time = 20 # Giây
+            uc_result = ""
+            
+            for attempt in range(max_retries):
+                try:
+                    time.sleep(4) # Nghỉ cơ bản giữa các nhịp
+                    res_uc = crew_uc.kickoff()
+                    uc_result = getattr(res_uc, 'raw', str(res_uc))
+                    break # Thành công -> Thoát vòng lặp retry
+                except Exception as e:
+                    if "RateLimit" in str(e) or "429" in str(e):
+                        if attempt < max_retries - 1:
+                            st.warning(f"⏳ Groq API đang thở dốc (Rate Limit). Tạm nghỉ {wait_time}s để hồi Token... (Thử lại {attempt+1}/{max_retries})")
+                            time.sleep(wait_time)
+                            wait_time += 15 # Tăng thời gian chờ cho lần sau (20s -> 35s)
+                        else:
+                            st.error(f"❌ Đã thử lại 3 lần nhưng Groq vẫn khóa API. Bỏ qua Use Case: {uc_name}")
+                            uc_result = f"*(Lỗi Rate Limit API: Không thể sinh chi tiết Use Case này. Vui lòng thử lại sau)*"
+                    else:
+                        st.error(f"Lỗi không xác định: {e}")
+                        uc_result = f"*(Lỗi hệ thống: {e})*"
+                        break
             
             full_document += f"\n### 2.{idx+1}. Use Case: {uc_name}\n" + uc_result + "\n"
-
-        # --- BƯỚC 4: YÊU CẦU PHI CHỨC NĂNG ---
-        time.sleep(3)
-        st.write("⚙️ Viết yêu cầu phi chức năng...")
-        t_ch3_draft = Task(description=f"Viết CHƯƠNG 3: YÊU CẦU PHI CHỨC NĂNG cho: {user_idea}.", expected_output="Nháp", agent=agent_ba)
-        t_ch3_final = Task(description="Chuẩn hóa bản nháp Chương 3", expected_output="Chốt", agent=agent_tpm)
-        crew_ch3 = Crew(agents=[agent_ba, agent_tpm], tasks=[t_ch3_draft, t_ch3_final], verbose=False)
-        full_document += "\nCHƯƠNG 3: YÊU CẦU PHI CHỨC NĂNG & DỮ LIỆU\n" + getattr(crew_ch3.kickoff(), 'raw', "")
-        
-        st.session_state.final_srs = full_document
-        status.update(label="✅ ĐÃ HOÀN THÀNH SRS DẠNG BẢNG (CÓ MỞ RỘNG)!", state="complete")
 
 # ===== 4. CORE LOGIC 2: KHU VỰC QA (TẠO TEST CASE) =====
 if st.session_state.final_srs:
