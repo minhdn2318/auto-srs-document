@@ -5,3 +5,4 @@ groq
 google-generativeai
 crewai
 langchain-groq
+litellm
